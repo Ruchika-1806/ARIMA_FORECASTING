@@ -1,0 +1,211 @@
+---
+title: "Project"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(tseries)
+library(forecast)
+library(dplyr)
+library(fma)
+library(TTR)
+library(ggfortify)
+library(zoo)
+```
+
+## Aim: To forecast closing stock prices of Google through time series analysis via ARIMA model.  
+
+## Exploring the dataset
+
+We have a dataset[7] which contains the stock price values for Google. It consists of 6 features: Date, Open, High, Low, Close, Volume. All the features except Date are continuous values which state the stock prices at various stages of a trading day. Date is factor variable which holds dates from 14th March 2016 to 8th March 2017. It is converted into a Date variable with "%Y-%m-%d" format. We have 249 observations corresponding to the trading days between the dates. We have extracted only two columns: Date and Close in a new data frame (for easier processing) to perform time series analysis on it. There is no missing values in the dataset and no duplicate values checked using  googledata[duplicated(googledata), ].
+
+
+```{r cars, echo=FALSE}
+
+Google <- read.csv("GoogleData.csv")
+
+googledata<-subset(Google,select=c(Date,Close))
+#googledata[duplicated(googledata), ]
+googledata$Date <- as.Date(googledata$Date, format = "%Y-%m-%d")
+str(googledata)
+```
+
+## Data Pre-processing
+
+Many dates are missing in the dataset without any regularisation. Therefore, data must be pre-processed to regularize it.Saturdays & Sundays are not present in the dataset as no trade happends on these days. However, there is no information about the holidays.These dates must be examined to have a frequency (equal intervals) in the dataset for seasonality. The dataframe is merged with another dataframe holding all calender days of the period under investigation created using seq.Date() function. The missing days (NA values) are examined and imputed according to Last Observation Carried Forward(LOCF) using na.locf() function. LOCF replaces each missing value with the most recent present value prior to it. Furthermore, a time series with frequency of 20 to represent monthly data is created. [Each week has 5 trading days. Hence a month will have 20 trading days!]
+
+
+```{r,echo=FALSE}
+googledata = as.data.frame(googledata)
+
+#Data frame with all calender dates
+mydates = seq.Date(from = as.Date("2016-03-14"), 
+                to = as.Date("2017-03-08"), 
+                by = 1)
+mydates = data.frame(Date = mydates)
+
+#MErging two data frames
+processed_data = merge(googledata, mydates, by = "Date", all.y = T)
+
+#The data starts from the first trading day:monday. Remove Sundays & Saturdays from the data.
+processed_data = processed_data[-(seq(from = 7, to = nrow(processed_data), by = 7)),]
+processed_data = processed_data[-(seq(from = 6, to = nrow(processed_data), by = 7)),]
+
+#Impute the NA values for Holidays with the last closing stock price.
+processed_data = na.locf(processed_data)
+
+#No NA values in the dataset as check.
+#sum(is.na(processed_data))
+
+#Creating a time series of 5 frequency
+googleSeries = ts(as.numeric(processed_data$Close),frequency = 5)
+ggplot(googledata,aes(x=Date,y=Close))+geom_line(color="red")+theme_bw()+labs(title = "Google Closing Stock Time Series",x="Closing Stock Value",y="Date")
+seasonplot(googleSeries, season.labels = c("Mon", "Tue", "Wed", "Thu", "Fri"))
+
+
+```
+The closing stock value appears to have a random pattern. The closing pattern appears to be increasing oveall with time. There was a large drop in the middle of the year around June to September followed by an increase in the successive time of the year .
+
+The seasonplot all weeks are put together for easy comparison using seasonplot() in forecast package. All the weeks of dataset put together against each other. On the x axis we have five working days starting at MOnday and ending on Friday. Y axis contains respective Closing prices in U.S dollars. The highest price for all of these values was either Thursday or Fridays. Both values seemed to be very close in that regard . As the lowest values here don't happend to be either Wednesday or Tuesday. Another interesting thing is base line which is nothing else than the mean of the corresponding series. We clearly see that mean is lowest on WEdnesday. The difference is not large, but in finance this can be a significant edge. 
+
+The series neither appear to be multiplicative nor additive. We can estimate the the two components of a non-seasonal data, Trend and an Irregular component through decomposition of its additive series.The trend component could even by examined using SMA().
+
+```{r,echo=FALSE}
+decm <- decompose(googleSeries,type="additive")
+plot(decm, col = "red")
+hell<-SMA(googleSeries,n=20)
+plot.ts(hell)
+```
+
+The trend component seems to be random with an increasing effect as stated earlier with a decrease near 10. The irregular component is depicted via the random component in the decomposition. Since we have a non seasoal data we will use Non-Seasonal ARIMA model : ARIMA(p,d,q) to forecast the values.
+
+1) p = It denotes periods to lag. It is the order of the autoregression part & can be calculated using Partial Autocorrelation plot(PACF).
+2) d = In an ARIMA model we transform a time series into stationary one(series without trend or seasonality) using differencing. d refers to the number of differencing transformations required by the time series to get stationary.
+3) q = This variable denotes the lag of the error component, where error component is a part of the time series not explained by trend or seasonality. It is order of the moving average part & can be calculated using Autocorrelation plot(ACF).
+
+## Assumptions of Time Series Analysis using ARIMA(p,d,q)
+
+1) Univariariate Data: We have only single feature in the data, "Close" on which we want to perform time series analysis with its past values. Hence, the assumption is met.
+2) Stationary Data : Through visual inspection the data does not seem to be stationary as mean & variance are not constant over time. The stationarity of the data can further be tested using Dickey Fuller test and Auto Correlation Plot. The test analysis yields a p-value of 0.2382(>0) is not significant. Thus, the data is not stationary. Differencing of log transformation on the series with difference = 1 is performed. Transformations such as logarithms help to stabilise the variance of a time series. Differencing help stabilise the mean of a time series by removing changes in the level of a time series, and therefore eliminating (or reducing) trend and seasonality. The differenced time series on Dickey Fuller test yields p-value of 0.01~0, thus the null hypothesis(series is not stationary) is rejected and the series is now stationary. The d paramter in ARIMA model for differencing required to get a stationary series is set to 1. Therefore, the assumption is met with d=1.
+
+```{r,echo=FALSE}
+
+#Dickey fuller Test
+adf.test(googleSeries, alternative = "stationary", k = 0)
+acf(googleSeries)
+# pacf(googleSeries)
+
+#Differencing of 1
+diffSeries <- diff(log(googleSeries), differences=1)
+autoplot(diffSeries)+ggtitle("Stationary Closing Time Series(Difference =1)") +
+    xlab("Time") +
+    ylab("Values")
+
+#Dickey Fuller Test
+adf.test(diffSeries, alternative = "stationary", k = 0)
+acf(diffSeries)
+pacf(diffSeries)
+
+
+
+```
+The acf() function plots the correlation between a series and its lags ie previous observations with a 95% confidence interval in blue. The autocorrelation at all the possible lags crosses the CI indicating that the series is non stationary.
+
+In the second ACF plot which shows the autocorrelation in lags after differencing of 1, we can see a spike at lag 0 taking the value 1 as it represents the correlation between the data and themselves. No further spike or a significant lag is seen apart from the one after 3 These can be ignored as it is just outside the limits, and not in the first few lags. Therefore, we can estimate q=0.
+
+In The PACF plot, all the spikes are under the confidence interval except a similar spikes after 3 can be seen in the graph. Since PAC gives us no significant lag, p=0 can be calculated from the graph. 
+
+So, our canditate ARIMA model is: ARIMA(0,1,0). 
+
+## Fitting an ARIMA model
+
+We are using auto.arima() function in R to find the best model that fits our time series. 
+
+```{r,echo=FALSE}
+
+#Using auto.arima
+model= auto.arima(googleSeries,trace = T)
+model
+```
+
+The result matches the one which we estimated. Our candidate model is selected as the best model to fit the time series because is gives the least Akaike’s Information Criterion(AIC) value of 1807.31 among the rest of the configurations. Since we got only the non-seasonal component in the model, therefore our series is non-seasonal.
+
+### Model Residual Analysis:
+
+```{r, echo=FALSE}
+autoplot(model$residuals)
+checkresiduals(model)
+ggtsdiag(model)
+qqnorm(model$residuals)
+qqline(model$residuals)
+acf(model$residuals)
+Box.test(model$residuals ,type="Ljung-Box")
+
+
+
+```
+The residuals from the model need to be white noise ie. there should be no autocorrelation in the residuals. The plots are made using qqnorm(), checkresiduals(), ggtsdiag(), and autoplot() functions in R.
+
+1) Ploting Residuals: The residuals are centered around 0. Therefore, the mean is close to zero. The time plot of the residuals shows that the variation of the residuals stays much the same across the historical data, apart from one outlier outside -3, and therefore the residual variance can be treated as constant.
+2) Box-Ljung Test : The test reveals the autocorrelation in the series. The null hypothesis is that the residuals from the ARIMA model doenot have autocorrelation at 95% significance level. The test reveals p-value of 0.9213(>0.05) is non significant. Moreover, the p-values for the Ljung-Box Q test all are well above 0.05, indicating “non-significance.” Therefore, there is no autocorrelation in the residuals. So, our residuals are white-noise.
+3) ACF of Residuals: The ACF of the residuals shows no significant autocorrelations apart at lag=0 which is the autocorrelation of series with itself.
+4) Q-Q plot & Histogram : Both these graphs depict normality of the residuals. The residuals are centered around 0 and are quite normal. There is a tail at the left side even if the outlier is removed. Consequently, forecasts will probably be quite good, but prediction intervals that are computed assuming a normal distribution may be inaccurate.
+
+## Forecasting:
+
+As all the graphs are in support of the assumption that there is no pattern of autocorrelation in the residuals, therefore, our model ARIMA(0,1,0) is a good fit and we can use it to forecast closing stock values using forecast() function in R.
+
+
+```{r, echo=FALSE}
+
+forecastModel= forecast(model,h=30,level = c(95))
+autoplot(forecastModel)
+accuracy(model)
+
+```
+We have staright line close to last observation.There is no seasonality in the forecast as seen in the ARIMA model. The forecastis slightly above the last observation which was also higher than the previous one.The model consideres several last observations in making the forecast. The grey area represents the 95% confidence interval of the forecast. It goes wider with time. The mean average perecentage error (MAPE) of model calculated using accuracy() function in R is quite small 0.63% indicating a good model.Therefore, the closing stock values are likely to be higher than the previous ones. Therefore, it ia definite profit to trade with Google.
+
+## Validation via Train and Test sets:
+
+We divide the series into a train and test series using subset(). We split the series in 80:20 ratio of train:test. The forecast of the training was compared with the actual trend in the series or the values if the test set. The results seems to be quite good. The actual trend is within the confidence interval cmputed by the forecast. Therefoe, our model was validated using the information we had & it proved to be a good model.
+
+```{r,echo=FALSE}
+
+#window(googleSeries,start=1)
+test<-subset(googleSeries,start=length(googleSeries)-53)
+train<-subset(googleSeries,end = 211)
+
+fit_test <- arima(train, c(0,1,0))
+forecast1 <- forecast(fit_test, level = c(95),h=60)
+forecast1
+autoplot(forecast1)+autolayer(googleSeries)
+
+```
+
+
+## Conclusion:
+
+1) The time series analysis can be used to forecast any future values for any univariate data.
+2) Non- seasonal ARIMA(p,d,q) model  was used to forecast the non-seasonal time series of Google stock from March 2016 to March 2017.
+3) Stationarity holds an important aspect in time series & tests seems to be satisfied for these assumptions.
+4) The diagonstic tests on residuals, Box Ljung, ACF plots, QQ plots for the model and model validation on train & test sets revealed good results
+5) The stock value predicted for future months in 2017 was also compared with the actual values online using "finance.yahoo"[5] and results were similar. Therefore, a successful forecasting was implemented.
+6) Since, forecast predicted an overall increase in the closing values for the next few months, there will be an overall profit in pursuing trade with Google. Generally, trading with Google is good for the extremes in a year as compared to trading in the middle months of a year.
+7) Future scope of the project can be moving on to more complicated time series datasets, models and analysing it & making significant comparisons and conclusions from it.
+
+
+## References:
+
+1. https://otexts.com/fpp2/stationarity.html
+2. https://datascienceplus.com/time-series-analysis-using-arima-model-in-r/
+3. http://rstudio-pubs-static.s3.amazonaws.com/311446_08b00d63cc794e158b1f4763eb70d43a.html
+4. https://otexts.com/fpp2/forecasting-on-training-and-test-sets.html
+5. https://finance.yahoo.com/quote/GOOGL/history?period1=1490227200&period2=1492905600&interval=1d&filter=history&frequency=1d
+6. https://a-little-book-of-r-for-time-series.readthedocs.io/en/latest/src/timeseries.html
+7. https://www.kaggle.com/jamesbasker/goog-ticker-stock-data
+8. Resources on Learn & Piazza.
+
